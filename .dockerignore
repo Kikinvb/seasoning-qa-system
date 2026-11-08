@@ -1,0 +1,10 @@
+data
+scripts
+.workbuddy
+.git
+.env
+.venv
+**/__pycache__
+frontend/node_modules
+frontend/dist
+

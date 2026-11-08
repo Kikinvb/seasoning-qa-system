@@ -1,0 +1,108 @@
+* {box-sizing: border-box}
+:root {font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #14263d; background: #fbfdff; font-synthesis: none}
+body {margin: 0}
+button, input, textarea {font: inherit}
+button, .file-button {padding: .55rem .8rem; border: 1px solid #d9e4ef; border-radius: .65rem; background: white; color: inherit; cursor: pointer}
+button:hover:not(:disabled), .file-button:hover {background: #e7f0f8}
+button:disabled, .disabled {opacity: .5; cursor: default}
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, .file-button:focus-within {outline: 2px solid #128480; outline-offset: 2px}
+.primary {background: #086765; color: white; border-color: #086765}
+.primary:hover:not(:disabled), .file-button.primary:hover {background: #087a76}
+a {color: #17694d}
+small, p {color: #526579}
+h1 {font-size: clamp(1.45rem, 4vw, 2.2rem); margin: .6rem 0}
+h2 {font-size: 1.05rem}
+.layout {display: flex; height: 100dvh; overflow: hidden}
+.sidebar {background: #edf3fa; border-right: 1px solid #d9e4ef; width: 235px; flex: none; display: flex; flex-direction: column; gap: .65rem; padding: 1rem}
+.brand {display: flex; align-items: center; gap: .7rem; margin-bottom: .65rem; font-weight: 700}
+.brand small {display: block; margin-top: .2rem; font-weight: 400}
+.history {flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: .3rem; margin-top: .65rem}
+.brand-logo {width: 38px; height: 38px; flex: none}
+.welcome-logo {display: block; width: 64px; height: 64px; margin-bottom: 1.35rem}
+.history-row {display: flex; align-items: center; min-width: 0; border-radius: .65rem}
+.history-row.selected {background: #ddeaf7}
+.history-row button {background: transparent; border-color: transparent}
+.history-title {flex: 1; min-width: 0; text-align: left; text-overflow: ellipsis; overflow: hidden; white-space: nowrap}
+.history-delete {display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; color: #526579}
+.history-delete svg {width: 16px; height: 16px}
+.history-delete:hover:not(:disabled) {background: #f8e7e7; color: #862e33}
+button.selected {background: #ddeaf7; border-color: #cadbed}
+.model {font-size: .85rem; padding: .5rem; overflow-wrap: anywhere}
+.dot {display: inline-block; background: #b68430; width: .55rem; height: .55rem; border-radius: 50%; margin-right: .45rem}
+.dot.ready {background: #309467}
+main {flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column}
+header {display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.4rem; border-bottom: 1px solid #dce6f0; font-weight: 650}
+.conversation {flex: 1; overflow: auto; min-height: 0; padding: 1.4rem max(1rem, calc((100% - 760px) / 2))}
+.welcome {text-align: left; margin: clamp(1.5rem, 10vh, 6.5rem) auto}
+.welcome h1 {font-size: clamp(1.8rem, 5vw, 3rem); letter-spacing: -.025em}
+.welcome p {line-height: 1.6}
+.message {margin: 0 0 1.3rem; padding: .9rem 1rem; border-radius: .9rem; overflow-wrap: anywhere}
+.message.user {background: #e7f1fa; width: fit-content; max-width: 88%; margin-left: auto}
+.message.assistant {padding-inline: 0; border-radius: 0}
+.speaker {font-size: .75rem; color: #526579; font-weight: 650; margin-bottom: .5rem}
+.message-text, .excerpt {white-space: pre-wrap; line-height: 1.7}
+.answer-text {font-size: .975rem; line-height: 1.8; color: #14263d}
+.answer-text > :first-child {margin-top: 0}
+.answer-text > :last-child {margin-bottom: 0}
+.answer-text p {color: inherit; margin: .7em 0}
+.answer-text :is(h1,h2,h3,h4,h5,h6) {font-weight: 670; line-height: 1.45; margin: 1.4em 0 .45em; letter-spacing: normal}
+.answer-text h1 {font-size: 1.35rem}
+.answer-text h2 {font-size: 1.18rem}
+.answer-text :is(h3,h4,h5,h6) {font-size: 1.05rem}
+.answer-text strong {font-weight: 700}
+.answer-text :is(ul,ol) {margin: .65em 0; padding-inline-start: 1.45em}
+.answer-text li + li {margin-top: .32em}
+.answer-text li > p {margin: .25em 0}
+.answer-text blockquote {margin: .85em 0; padding: .15em .85em; border-left: 3px solid #86b9bc; color: #526579}
+.answer-text hr {border: 0; border-top: 1px solid #dce6f0; margin: 1.25em 0}
+.answer-text code {font: .88em/1.55 ui-monospace, Consolas, monospace; padding: .12em .35em; border-radius: .3rem; background: #edf3fa}
+.answer-text pre {margin: .85em 0; padding: .8rem 1rem; overflow-x: auto; border: 1px solid #dce6f0; border-radius: .65rem; background: #f1f6fb}
+.answer-text pre code {padding: 0; background: none; overflow-wrap: normal}
+.answer-table {max-width: 100%; overflow-x: auto; margin: .85em 0}
+.answer-table table {border-collapse: collapse; font-size: .9rem; text-align: left}
+.answer-table :is(th,td) {border: 1px solid #dce6f0; padding: .45rem .65rem; vertical-align: top}
+.answer-table th {background: #edf3fa}
+.answer-text .cite {display: inline-grid; place-items: center; min-width: 1.25rem; min-height: 1.25rem; margin-inline: .13rem; padding: 0 .23rem; vertical-align: baseline; border: 0; border-radius: .35rem; font-size: .71rem; font-weight: 650; line-height: 1; background: #e0f3f2; color: #075e5a}
+.answer-text .cite:hover {background: #cdeae8}
+.answer-text .answer-sources {margin-top: 1.4rem; padding-top: .85rem; border-top: 1px solid #dce6f0}
+.answer-sources h3 {margin: 0 0 .45rem; font-size: .92rem}
+.answer-sources ul {padding: 0; margin: 0; list-style: none}
+.answer-sources .source-link {display: grid; grid-template-columns: 1.45rem minmax(0, 1fr) auto; align-items: center; gap: .65rem; width: 100%; padding: .45rem .55rem; text-align: left; background: #f1f6fb; border: 0}
+.answer-sources .source-link:hover {background: #e7f0f8}
+.source-number {display: grid; place-items: center; width: 1.3rem; height: 1.3rem; border-radius: .35rem; background: #dcefeb; color: #075e5a; font-size: .73rem; font-weight: 650}
+.source-details {min-width: 0; line-height: 1.45}
+.source-details strong {display: block; font-size: .86rem}
+.source-details small {display: block; font-size: .75rem; margin-top: .15rem}
+.source-action {color: #075e5a; font-size: .75rem; white-space: nowrap}
+.actions {display: flex; align-items: center; gap: .5rem; flex-wrap: wrap}
+.composer {display: flex; align-items: flex-end; gap: .55rem; width: min(760px, calc(100% - 2rem)); margin: .5rem auto max(1.25rem, env(safe-area-inset-bottom)); padding: .45rem; flex: none; background: #fff; border: 1px solid #c9d9e6; border-radius: 1.3rem; box-shadow: 0 5px 18px #14263d0d}
+.composer:focus-within {border-color: #128480; box-shadow: 0 0 0 3px #12848018}
+.composer textarea {flex: 1; min-width: 0; field-sizing: content; min-height: 2.75rem; max-height: min(12rem, 25dvh); padding: .63rem .35rem .63rem .65rem; border: 0; resize: none; outline: none; background: transparent; color: #14263d; font-size: 1rem; line-height: 1.5; overflow-y: auto}
+.composer textarea::placeholder {color: #65788c}
+.composer .send-button {display: grid; place-items: center; flex: none; width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: .9rem; background: #086765; color: #fff}
+.composer .send-button:hover:not(:disabled) {background: #075452}
+.composer .send-button:disabled {background: #e7eff5; color: #526579; opacity: 1}
+.send-button svg {width: 1.3rem; height: 1.3rem}
+.alert, .notice {padding: .6rem 1rem; margin: .6rem 1rem 0; border-radius: .55rem; background: #fff0eb; color: #8a3e2c}
+.notice {background: #eaf4ed; color: #24634b}
+.library {padding: 1.2rem 1.5rem; overflow: auto}
+.upload-box, .source {background: white; border: 1px solid #d9e4ef; border-radius: .8rem; padding: 1rem; margin-bottom: .7rem; overflow-wrap: anywhere}
+.upload-box .actions {margin-top: .8rem}
+.source p {margin: .45rem 0}
+.file-button {position: relative; overflow: hidden; display: inline-block}
+.file-button input {position: absolute; inset: 0; opacity: 0; cursor: pointer}
+.evidence {width: min(380px, 40vw); flex: none; background: white; border-left: 1px solid #d9e4ef; padding: 1rem; overflow: auto; overflow-wrap: anywhere}
+.evidence-top {display: flex; justify-content: space-between; align-items: center}
+.excerpt {margin: 1rem 0; background: #eff5fa; padding: .85rem; border-radius: .6rem}
+@media (max-width: 760px) {
+  .layout {flex-direction: column}
+  .sidebar {width: auto; flex-direction: row; align-items: center; flex-wrap: wrap; padding: .55rem; gap: .45rem; border-right: 0; border-bottom: 1px solid #d9e4ef}
+  .brand {margin: 0; font-size: .8rem}
+  .brand small, .history small {display: none}
+  .sidebar button {font-size: .78rem}
+  .history {flex: 0 0 100%; flex-direction: row; margin: 0}
+  .history-row {flex: none; max-width: 14rem}
+  .model {margin-left: auto}
+  .evidence {position: fixed; inset: auto 0 0; width: 100%; max-height: 70dvh; border: 1px solid #d9e4ef; box-shadow: 0 -8px 36px #14263d30}
+}
+
