@@ -3,6 +3,8 @@ import json
 import logging
 import os
 import re
+import secrets
+from .auth import hash_password, verify_password, token_hash
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -99,12 +101,101 @@ async def protect_local_api(request: Request, call_next):
         local_origin = f"{request.url.scheme}://{request.headers.get('host')}"
         if origin and origin != local_origin:
             return JSONResponse({"detail": "请从本机助手页面发起操作。"}, status_code=403)
+    if request.url.path.startswith("/api/") and request.url.path not in {"/api/auth/login", "/api/auth/setup", "/api/auth/state"}:
+        with db() as conn:
+            user = conn.execute("SELECT u.id,u.username,u.role FROM login_session s JOIN app_user u ON u.id=s.user_id WHERE s.token_hash=%s AND s.expires_at>now() AND u.active", (token_hash(request.cookies.get("session", "")),)).fetchone()
+            if not user:
+                return JSONResponse({"detail": "请先登录。"}, status_code=401)
+            request.state.user = user
+            if request.url.path.startswith("/api/users") and user["role"] != "admin":
+                return JSONResponse({"detail": "需要管理员权限。"}, status_code=403)
+            if request.url.path.startswith("/api/sources") and request.method != "GET" and user["role"] not in {"admin", "maintainer"}:
+                return JSONResponse({"detail": "需要知识库维护权限。"}, status_code=403)
+            if request.url.path.startswith("/api/chats/"):
+                chat_id = request.url.path.split("/")[3]
+                if not conn.execute("SELECT 1 FROM chat_session WHERE id::text=%s AND user_id=%s", (chat_id, user["id"])).fetchone():
+                    return JSONResponse({"detail": "会话不存在。"}, status_code=404)
     return await call_next(request)
 
 
 def db():
     return app.state.pool.connection()
 
+
+
+class Credentials(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=10, max_length=128)
+
+class NewUser(Credentials):
+    role: str = "user"
+
+@app.get("/api/auth/state")
+def auth_state():
+    with db() as conn:
+        return {"setup_required": not conn.execute("SELECT 1 FROM app_user LIMIT 1").fetchone()}
+
+@app.post("/api/auth/setup")
+def setup(value: Credentials):
+    if not value.username.strip():
+        raise HTTPException(400, "账号不能为空。")
+    with db() as conn, conn.transaction():
+        conn.execute("LOCK TABLE app_user IN EXCLUSIVE MODE")
+        if conn.execute("SELECT 1 FROM app_user LIMIT 1").fetchone():
+            raise HTTPException(409, "系统已初始化。")
+        user = conn.execute("INSERT INTO app_user(username,password_hash,role) VALUES (%s,%s,'admin') RETURNING id", (value.username.strip(), hash_password(value.password))).fetchone()
+        conn.execute("UPDATE chat_session SET user_id=%s WHERE user_id IS NULL", (user["id"],))
+    return {"ok": True}
+
+@app.post("/api/auth/login")
+def login(value: Credentials):
+    with db() as conn:
+        user = conn.execute("SELECT * FROM app_user WHERE username=%s AND active", (value.username.strip(),)).fetchone()
+        if not user or not verify_password(value.password, user["password_hash"]):
+            raise HTTPException(401, "账号或密码错误。")
+        token = secrets.token_urlsafe(32)
+        conn.execute("DELETE FROM login_session WHERE expires_at<=now()")
+        conn.execute("INSERT INTO login_session(token_hash,user_id) VALUES (%s,%s)", (token_hash(token), user["id"]))
+    response = JSONResponse({"ok": True})
+    response.set_cookie("session", token, httponly=True, samesite="strict", max_age=43200)
+    return response
+
+@app.get("/api/auth/me")
+def me(request: Request):
+    return request.state.user
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    with db() as conn:
+        conn.execute("DELETE FROM login_session WHERE token_hash=%s", (token_hash(request.cookies.get("session", "")),))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("session")
+    return response
+
+@app.get("/api/users")
+def users():
+    with db() as conn:
+        return conn.execute("SELECT id,username,role,active FROM app_user ORDER BY username").fetchall()
+
+@app.post("/api/users")
+def create_user(value: NewUser):
+    if value.role not in {"admin", "maintainer", "user"} or not value.username.strip():
+        raise HTTPException(400, "账号或角色无效。")
+    with db() as conn:
+        item = conn.execute("INSERT INTO app_user(username,password_hash,role) VALUES (%s,%s,%s) ON CONFLICT(username) DO NOTHING RETURNING id", (value.username.strip(), hash_password(value.password), value.role)).fetchone()
+        if not item:
+            raise HTTPException(409, "账号已存在。")
+    return {"ok": True}
+
+@app.patch("/api/users/{user_id}/active")
+def toggle_user(user_id: UUID, request: Request):
+    if user_id == request.state.user["id"]:
+        raise HTTPException(400, "不能停用当前管理员。")
+    with db() as conn:
+        if not conn.execute("UPDATE app_user SET active=NOT active WHERE id=%s RETURNING id", (user_id,)).fetchone():
+            raise HTTPException(404, "账号不存在。")
+        conn.execute("DELETE FROM login_session WHERE user_id=%s", (user_id,))
+    return {"ok": True}
 
 @app.get("/api/status")
 def status():
@@ -179,15 +270,15 @@ def original(source_id: UUID):
 
 
 @app.get("/api/chats")
-def chats():
+def chats(request: Request):
     with db() as conn:
-        return conn.execute("SELECT * FROM chat_session ORDER BY created_at DESC").fetchall()
+        return conn.execute("SELECT * FROM chat_session WHERE user_id=%s ORDER BY created_at DESC", (request.state.user["id"],)).fetchall()
 
 
 @app.post("/api/chats")
-def new_chat():
+def new_chat(request: Request):
     with db() as conn:
-        return conn.execute("INSERT INTO chat_session (title) VALUES ('新对话') RETURNING *").fetchone()
+        return conn.execute("INSERT INTO chat_session (title,user_id) VALUES ('新对话',%s) RETURNING *", (request.state.user["id"],)).fetchone()
 
 
 @app.get("/api/chats/{session_id}")

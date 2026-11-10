@@ -66,8 +66,11 @@ function json(method: string, value: unknown): RequestInit {
   return {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)}
 }
 
-function App() {
-  const [page, setPage] = useState<'chat' | 'library'>('chat')
+type User = {id: string; username: string; role: string; active?: boolean}
+const roles: Record<string, string> = {user: '业务人员', maintainer: '知识库维护人员', admin: '系统管理员'}
+
+function App({user}: {user: User}) {
+  const [page, setPage] = useState<'chat' | 'library' | 'users'>('chat')
   const [chats, setChats] = useState<Chat[]>([])
   const [session, setSession] = useState<string>()
   const [messages, setMessages] = useState<Message[]>([])
@@ -207,7 +210,10 @@ function App() {
     <aside className="sidebar">
       <div className="brand"><img className="brand-logo" src={logo} alt="" /><div>食品安全助手<small>调味品知识与问答</small></div></div>
       <button className="primary" disabled={busy} onClick={() => void openChat()}>＋ 新对话</button>
-      <button className={page === 'library' ? 'selected' : ''} disabled={busy} onClick={() => {setPage('library'); setCitation(undefined); setError(''); setNotice('')}}>知识库管理</button>
+      <button className={page === 'library' ? 'selected' : ''} disabled={busy} onClick={() => {setPage('library'); setCitation(undefined); setError(''); setNotice('')}}>资料中心</button>
+      {user.role === 'admin' && <button onClick={() => setPage('users')}>用户管理</button>}
+      <small>{user.username} · {roles[user.role]}</small>
+      <button onClick={() => void api('/auth/logout', {method: 'POST'}).then(() => location.reload())}>退出登录</button>
       <div className="history"><small>会话历史</small>{chats.map(chat => <div key={chat.id} className={'history-row' + (page === 'chat' && chat.id === session ? ' selected' : '')}>
         <button className="history-title" title={chat.title} disabled={busy} onClick={() => void openChat(chat.id)}>{chat.title}</button>
         <button className="history-delete" title="删除会话" aria-label={'删除会话：' + chat.title} disabled={busy} onClick={() => void deleteChat(chat)}>
@@ -217,7 +223,7 @@ function App() {
       <div className="model" title={model?.configured ? 'API 已配置' : '等待配置 API 密钥'}><span className={model?.configured ? 'dot ready' : 'dot'} />{model?.model === 'deepseek-flash' || !model ? 'DeepSeek Flash' : model.model}{model && !model.configured && ' · 待配置'}</div>
     </aside>
     <main>
-      <header>{page === 'chat' ? '问答助手' : '知识库管理'}</header>
+      <header>{page === 'chat' ? '问答助手' : page === 'users' ? '用户管理' : '资料中心'}</header>
       {error && <div className="alert" role="alert">{error}</div>}
       {notice && <div className="notice" role="status">{notice}</div>}
       {page === 'chat' ? <>
@@ -276,25 +282,25 @@ function App() {
             </svg>
           </button>
         </form>
-      </> : <section className="library">
+      </> : page === 'users' ? <UserManagement /> : <section className="library">
         <h1>本地资料</h1><p>管理文件和索引状态。</p>
-        <div className="upload-box">
+        {user.role !== 'user' && <div className="upload-box">
           <h2>导入资料</h2><p>支持 XLSX、DOCX、文字版 PDF 和 UTF-8 CSV，每份最多 25 MB。</p>
           <div className="actions">
             <label className={'primary file-button' + (uploading ? ' disabled' : '')}>{uploading ? '上传中…' : '选择文件'}<input type="file" multiple accept=".pdf,.docx,.xlsx,.csv" disabled={uploading} onChange={event => {void upload(event.target.files); event.target.value = ''}} /></label>
             {!seed && <button onClick={() => void changeSource('/sources/seed', {method: 'POST'})}>导入首批资料</button>}
           </div>
         </div>
-        <h2>文件列表</h2>
+        }<h2>文件列表</h2>
         {sources.length === 0 && <p>暂未导入资料。</p>}
         {sources.map(source => <article className="source" key={source.id}>
           <div><strong>{source.filename}</strong><p>{statuses[source.parse_status] ?? source.parse_status} · {source.documents} 份文档 · {source.chunks} 条切片</p>{source.parse_error && <p>{source.parse_error}</p>}</div>
           <div className="actions">
             <a href={'/api/sources/' + source.id + '/file'}>原文件</a>
-            {source.parse_status === 'failed' && <button onClick={() => void changeSource('/sources/' + source.id + '/retry', {method: 'POST'})}>重试</button>}
-            <button disabled={source.parse_status === 'processing'} onClick={() => {
+            {user.role !== 'user' && source.parse_status === 'failed' && <button onClick={() => void changeSource('/sources/' + source.id + '/retry', {method: 'POST'})}>重试</button>}
+            {user.role !== 'user' && <button disabled={source.parse_status === 'processing'} onClick={() => {
               if (window.confirm('删除该文件及其检索索引？')) void changeSource('/sources/' + source.id, {method: 'DELETE'})
-            }}>删除</button>
+            }}>删除</button>}
           </div>
         </article>)}
       </section>}
@@ -313,5 +319,36 @@ function App() {
   </div>
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
+function UserManagement() {
+  const [users, setUsers] = useState<User[]>([])
+  const [error, setError] = useState('')
+  const refresh = () => api<User[]>('/users').then(setUsers).catch(e => setError(String(e.message)))
+  useEffect(() => {void refresh()}, [])
+  return <section className="library"><h1>用户管理</h1><p>创建人员账号并分配职责。停用账号将立即撤销其登录会话。</p>
+    {error && <p role="alert">{error}</p>}
+    <form className="account-form" onSubmit={async e => {
+      e.preventDefault(); const form = e.currentTarget; const data = new FormData(form)
+      try {await api('/users', json('POST', Object.fromEntries(data))); form.reset(); setError(''); await refresh()} catch(e) {setError((e as Error).message)}
+    }}><input name="username" placeholder="账号" required maxLength={64}/><input name="password" type="password" placeholder="初始密码（至少10位）" required minLength={10} maxLength={128}/><select name="role">{Object.entries(roles).map(([key,value]) => <option key={key} value={key}>{value}</option>)}</select><button className="primary">创建账号</button></form>
+    {users.map(u => <article className="source" key={u.id}><div><strong>{u.username}</strong><p>{roles[u.role]} · {u.active ? '正常' : '已停用'}</p></div><button onClick={async () => {try {await api('/users/'+u.id+'/active', {method:'PATCH'}); await refresh(); setError('')} catch(e) {setError((e as Error).message)}}}>{u.active ? '停用' : '启用'}</button></article>)}
+  </section>
+}
 
+function Entry() {
+  const [user, setUser] = useState<User>()
+  const [setup, setSetup] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  useEffect(() => {void (async () => {
+    try {const state = await api<{setup_required:boolean}>('/auth/state'); setSetup(state.setup_required)
+      if (!state.setup_required) {const response = await fetch('/api/auth/me'); if (response.ok) setUser(await response.json()); else if (response.status !== 401) throw new Error('无法获取登录状态')}
+    } catch(e) {setError((e as Error).message)} finally {setLoading(false)}
+  })()}, [])
+  if (loading) return <div className="login">正在加载…</div>
+  if (user) return <App user={user}/>
+  return <div className="login"><form className="login-card" onSubmit={async e => {
+    e.preventDefault(); const value = Object.fromEntries(new FormData(e.currentTarget)); setError('')
+    try {if (setup) await api('/auth/setup', json('POST', value)); await api('/auth/login', json('POST',value)); setUser(await api<User>('/auth/me'))} catch(e) {setError((e as Error).message); const state = await api<{setup_required:boolean}>('/auth/state'); setSetup(state.setup_required)}
+  }}><img src={logo} width="48"/><h1>{setup ? '初始化管理员' : '登录食品安全助手'}</h1><p>{setup ? '首次使用，请创建管理员账号。历史会话将归属此账号。' : '请使用管理员分配的账号登录。'}</p><label>账号<input name="username" required maxLength={64} autoComplete="username"/></label><label>密码<input name="password" type="password" required minLength={10} maxLength={128} autoComplete={setup ? 'new-password' : 'current-password'}/></label>{error && <p role="alert">{error}</p>}<button className="primary">{setup ? '创建并进入系统' : '登录'}</button></form></div>
+}
+createRoot(document.getElementById('root')!).render(<Entry />)

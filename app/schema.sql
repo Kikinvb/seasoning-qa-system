@@ -1,4 +1,16 @@
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS app_user (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    username text UNIQUE NOT NULL,
+    password_hash text NOT NULL,
+    role text NOT NULL CHECK (role IN ('user','maintainer','admin')),
+    active boolean NOT NULL DEFAULT true
+);
+CREATE TABLE IF NOT EXISTS login_session (
+    token_hash text PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES app_user ON DELETE CASCADE,
+    expires_at timestamptz NOT NULL DEFAULT now() + interval '12 hours'
+);
 CREATE TABLE IF NOT EXISTS kb_source (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     source_type text NOT NULL,
@@ -58,4 +70,5 @@ CREATE TABLE IF NOT EXISTS chat_message (
     content text NOT NULL,
     citations jsonb NOT NULL DEFAULT '[]'
 );
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES app_user;
 
