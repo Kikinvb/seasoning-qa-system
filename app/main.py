@@ -107,7 +107,7 @@ async def protect_local_api(request: Request, call_next):
             if not user:
                 return JSONResponse({"detail": "请先登录。"}, status_code=401)
             request.state.user = user
-            if request.url.path.startswith("/api/users") and user["role"] != "admin":
+            if request.url.path.startswith(("/api/users", "/api/audit")) and user["role"] != "admin":
                 return JSONResponse({"detail": "需要管理员权限。"}, status_code=403)
             if request.url.path.startswith("/api/sources") and request.method != "GET" and user["role"] not in {"admin", "maintainer"}:
                 return JSONResponse({"detail": "需要知识库维护权限。"}, status_code=403)
@@ -117,6 +117,45 @@ async def protect_local_api(request: Request, call_next):
                     return JSONResponse({"detail": "会话不存在。"}, status_code=404)
     return await call_next(request)
 
+
+@app.middleware("http")
+async def audit_operations(request: Request, call_next):
+    path = request.url.path
+    tracked = request.method in {"POST", "PATCH", "DELETE"} and (path.startswith(("/api/sources", "/api/users")) or path == "/api/auth/password")
+    target = ""
+    if tracked:
+        parts = path.split("/")
+        target = parts[3] if len(parts) > 3 else "新建"
+        if len(parts) > 3 and path.startswith(("/api/sources/", "/api/users/")):
+            table, column = ("kb_source", "filename") if parts[2] == "sources" else ("app_user", "username")
+            with db() as conn:
+                row = conn.execute(f"SELECT {column} AS name FROM {table} WHERE id::text=%s", (target,)).fetchone()
+                if row:
+                    target = row["name"] + " (" + target + ")"
+    response = await call_next(request)
+    user = getattr(request.state, "user", None)
+    if tracked and user:
+        labels = {"sources": "上传资料", "users": "创建账号", "seed": "导入首批资料", "retry": "重试导入", "replacement": "上传新版本", "active": "启停账号", "password": "修改本人密码"}
+        last = path.rsplit("/", 1)[-1]
+        action = labels.get(last, "编辑资料与发布" if path.startswith("/api/sources") else "调整角色或密码")
+        if request.method == "DELETE":
+            action = "删除资料"
+        try:
+            with db() as conn:
+                conn.execute("INSERT INTO audit_log(username,action,target,status_code) VALUES (%s,%s,%s,%s)", (user["username"], action, getattr(request.state, "audit_target", target)[:500], response.status_code))
+        except Exception:
+            log.exception("Failed to write operation audit log")
+    return response
+
+@app.get("/api/audit")
+def audit_entries(page: int = 1, result: str = "all"):
+    if page < 1 or result not in {"all", "success", "failure"}:
+        raise HTTPException(400, "筛选参数无效。")
+    condition = {"all": "TRUE", "success": "status_code<400", "failure": "status_code>=400"}[result]
+    with db() as conn:
+        total = conn.execute(f"SELECT count(*) AS count FROM audit_log WHERE {condition}").fetchone()["count"]
+        rows = conn.execute(f"SELECT * FROM audit_log WHERE {condition} ORDER BY id DESC LIMIT 30 OFFSET %s", ((page-1)*30,)).fetchall()
+    return {"items": rows, "total": total}
 
 def db():
     return app.state.pool.connection()
@@ -172,19 +211,55 @@ def logout(request: Request):
     response.delete_cookie("session")
     return response
 
+class PasswordChange(BaseModel):
+    current_password: str = Field(max_length=128)
+    password: str = Field(min_length=10, max_length=128)
+
+@app.post("/api/auth/password")
+def change_password(value: PasswordChange, request: Request):
+    with db() as conn, conn.transaction():
+        user = conn.execute("SELECT * FROM app_user WHERE id=%s FOR UPDATE", (request.state.user["id"],)).fetchone()
+        if not user or not verify_password(value.current_password, user["password_hash"]):
+            raise HTTPException(400, "当前密码不正确。")
+        conn.execute("UPDATE app_user SET password_hash=%s WHERE id=%s", (hash_password(value.password), user["id"]))
+        conn.execute("DELETE FROM login_session WHERE user_id=%s", (user["id"],))
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("session")
+    return response
+
+class AccountUpdate(BaseModel):
+    role: str
+    password: str | None = Field(default=None, min_length=10, max_length=128)
+
+@app.patch("/api/users/{user_id}")
+def update_account(user_id: UUID, value: AccountUpdate, request: Request):
+    if value.role not in {"admin", "maintainer", "user"}:
+        raise HTTPException(400, "角色无效。")
+    if user_id == request.state.user["id"]:
+        raise HTTPException(400, "请使用修改密码入口管理本人账号，不能调整自身角色。")
+    with db() as conn, conn.transaction():
+        if not conn.execute("UPDATE app_user SET role=%s WHERE id=%s RETURNING id", (value.role, user_id)).fetchone():
+            raise HTTPException(404, "账号不存在。")
+        if value.password:
+            conn.execute("UPDATE app_user SET password_hash=%s WHERE id=%s", (hash_password(value.password), user_id))
+        conn.execute("DELETE FROM login_session WHERE user_id=%s", (user_id,))
+    return {"ok": True}
+
 @app.get("/api/users")
 def users():
     with db() as conn:
         return conn.execute("SELECT id,username,role,active FROM app_user ORDER BY username").fetchall()
 
 @app.post("/api/users")
-def create_user(value: NewUser):
+def create_user(value: NewUser, request: Request):
+    request.state.audit_target = value.username.strip()
     if value.role not in {"admin", "maintainer", "user"} or not value.username.strip():
         raise HTTPException(400, "账号或角色无效。")
     with db() as conn:
         item = conn.execute("INSERT INTO app_user(username,password_hash,role) VALUES (%s,%s,%s) ON CONFLICT(username) DO NOTHING RETURNING id", (value.username.strip(), hash_password(value.password), value.role)).fetchone()
         if not item:
             raise HTTPException(409, "账号已存在。")
+    request.state.audit_target = f"{value.username.strip()} ({item['id']})"
     return {"ok": True}
 
 @app.patch("/api/users/{user_id}/active")
@@ -206,7 +281,7 @@ def status():
 def sources():
     with db() as conn:
         return conn.execute(
-            """SELECT s.id, s.filename, s.source_type, s.parse_status, s.parse_error,
+            """SELECT s.id, s.filename, s.source_type, s.parse_status, s.parse_error, s.category, s.description, s.publication, s.replaces_id, s.created_at,
                       (SELECT count(*) FROM kb_document d WHERE d.source_id=s.id) AS documents,
                       (SELECT count(*) FROM kb_chunk c JOIN kb_document d ON d.id=c.document_id
                        WHERE d.source_id=s.id) AS chunks
@@ -214,18 +289,68 @@ def sources():
         ).fetchall()
 
 
+class SourceMetadata(BaseModel):
+    category: str = Field(max_length=100)
+    description: str = Field(max_length=2000)
+    publication: str
+
+@app.patch("/api/sources/{source_id}")
+def edit_source(source_id: UUID, value: SourceMetadata):
+    if value.publication not in {"draft", "published", "disabled"}:
+        raise HTTPException(400, "无效的发布状态。")
+    with db() as conn, conn.transaction():
+        conn.execute("LOCK TABLE kb_source IN EXCLUSIVE MODE")
+        item = conn.execute("SELECT * FROM kb_source WHERE id=%s FOR UPDATE", (source_id,)).fetchone()
+        if not item:
+            raise HTTPException(404, "资料不存在。")
+        if value.publication == "published" and item["parse_status"] != "ok":
+            raise HTTPException(409, "解析成功后才能发布。")
+        if value.publication == "published":
+            newer = conn.execute("WITH RECURSIVE versions AS (SELECT id,publication FROM kb_source WHERE replaces_id=%s UNION ALL SELECT s.id,s.publication FROM kb_source s JOIN versions v ON s.replaces_id=v.id) SELECT 1 FROM versions WHERE publication='published' LIMIT 1", (source_id,)).fetchone()
+            if newer:
+                raise HTTPException(409, "已有更新版本发布，不能重新发布旧版。")
+            if item["replaces_id"]:
+                conn.execute("WITH RECURSIVE ancestors AS (SELECT id,replaces_id FROM kb_source WHERE id=%s UNION ALL SELECT s.id,s.replaces_id FROM kb_source s JOIN ancestors a ON s.id=a.replaces_id) UPDATE kb_source SET publication='disabled' WHERE id IN (SELECT id FROM ancestors)", (item["replaces_id"],))
+        conn.execute("UPDATE kb_source SET category=%s,description=%s,publication=%s WHERE id=%s", (value.category.strip() or "未分类", value.description, value.publication, source_id))
+    return {"ok": True}
+
+@app.post("/api/sources/{source_id}/replacement")
+def replace_source(source_id: UUID, file: UploadFile = File(...)):
+    filename = Path((file.filename or "").replace("\\", "/")).name
+    data = file.file.read(LIMIT + 1)
+    if Path(filename).suffix.lower() not in FORMATS or not data or len(data) > LIMIT:
+        raise HTTPException(400, "文件格式不支持或超过 25 MB。")
+    with db() as conn, conn.transaction():
+        conn.execute("LOCK TABLE kb_source IN EXCLUSIVE MODE")
+        old = conn.execute("SELECT * FROM kb_source WHERE id=%s", (source_id,)).fetchone()
+        if not old:
+            raise HTTPException(404, "原资料不存在。")
+        if old["source_type"] == "foodmate":
+            raise HTTPException(400, "首批混合资料包不支持整体版本替换，请独立上传更新文件。")
+        if conn.execute("SELECT 1 FROM kb_source WHERE replaces_id=%s", (source_id,)).fetchone():
+            raise HTTPException(409, "该资料已有后续版本，请在最新版本上继续更新。")
+        new_id, duplicate = queue_source(conn, filename, data)
+        if duplicate:
+            raise HTTPException(409, "相同文件已存在。")
+        conn.execute("UPDATE kb_source SET replaces_id=%s,category=%s,description=%s WHERE id=%s", (source_id, old["category"], old["description"], new_id))
+    return {"id": new_id}
+
 @app.post("/api/sources/seed")
-def seed():
+def seed(request: Request):
+    filename = SEED_FILE.name
+    request.state.audit_target = filename
     if not SEED_FILE.is_file():
         raise HTTPException(404, "未找到工作区中的种子 CSV。")
     with db() as conn:
         source_id, duplicate = queue_source(conn, SEED_FILE.name, SEED_FILE.read_bytes(), "foodmate")
+    request.state.audit_target = f"{filename} ({source_id})"
     return {"id": source_id, "duplicate": duplicate}
 
 
 @app.post("/api/sources")
-def upload(file: UploadFile = File(...)):
+def upload(request: Request, file: UploadFile = File(...)):
     filename = Path((file.filename or "").replace("\\", "/")).name
+    request.state.audit_target = filename
     if Path(filename).suffix.lower() not in FORMATS:
         raise HTTPException(400, "支持 PDF、XLSX、DOCX 和 CSV。")
     data = file.file.read(LIMIT + 1)
@@ -235,6 +360,7 @@ def upload(file: UploadFile = File(...)):
         raise HTTPException(400, "请在文件列表查看首批资料，或使用「导入首批资料」保留法规元数据。")
     with db() as conn:
         source_id, duplicate = queue_source(conn, filename, data)
+    request.state.audit_target = f"{filename} ({source_id})"
     return {"id": source_id, "duplicate": duplicate}
 
 
@@ -251,7 +377,10 @@ def retry(source_id: UUID):
 
 @app.delete("/api/sources/{source_id}")
 def delete(source_id: UUID):
-    with db() as conn:
+    with db() as conn, conn.transaction():
+        conn.execute("LOCK TABLE kb_source IN EXCLUSIVE MODE")
+        if conn.execute("SELECT 1 FROM kb_source WHERE replaces_id=%s", (source_id,)).fetchone():
+            raise HTTPException(409, "该文件有后续版本，需保留版本记录，请使用停用。")
         if not conn.execute(
             "DELETE FROM kb_source WHERE id=%s AND parse_status <> 'processing'", (source_id,)
         ).rowcount:
@@ -270,10 +399,22 @@ def original(source_id: UUID):
 
 
 @app.get("/api/chats")
-def chats(request: Request):
+def chats(request: Request, q: str = "", page: int = 1, size: int = 10):
+    if page < 1 or not 1 <= size <= 50 or len(q) > 200:
+        raise HTTPException(400, "查询参数无效。")
     with db() as conn:
-        return conn.execute("SELECT * FROM chat_session WHERE user_id=%s ORDER BY created_at DESC", (request.state.user["id"],)).fetchall()
+        return conn.execute("SELECT * FROM chat_session WHERE user_id=%s AND strpos(lower(title),lower(%s))>0 ORDER BY updated_at DESC,id LIMIT %s OFFSET %s", (request.state.user["id"], q.strip(), size, (page-1)*size)).fetchall()
 
+class ChatTitle(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+
+@app.patch("/api/chats/{session_id}")
+def rename_chat(session_id: UUID, value: ChatTitle):
+    if not value.title.strip():
+        raise HTTPException(400, "标题不能为空。")
+    with db() as conn:
+        conn.execute("UPDATE chat_session SET title=%s WHERE id=%s", (value.title.strip(), session_id))
+    return {"ok": True}
 
 @app.post("/api/chats")
 def new_chat(request: Request):
@@ -331,7 +472,7 @@ def search(session_id, question, as_of, historical):
 
 def save_turn(session_id, question, answer, citations):
     with db() as conn, conn.transaction():
-        conn.execute("UPDATE chat_session SET title=%s WHERE id=%s AND title='新对话'", (question[:24], session_id))
+        conn.execute("UPDATE chat_session SET title=CASE WHEN title='新对话' THEN %s ELSE title END,updated_at=now() WHERE id=%s", (question[:24], session_id))
         conn.execute(
             "INSERT INTO chat_message (session_id,role,content,citations) VALUES (%s,'user',%s,'[]'),(%s,'assistant',%s,%s)",
             (session_id, question, session_id, answer, Jsonb(citations)),

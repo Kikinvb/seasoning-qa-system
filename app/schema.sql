@@ -72,3 +72,25 @@ CREATE TABLE IF NOT EXISTS chat_message (
 );
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES app_user;
 
+
+ALTER TABLE kb_source ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT '未分类';
+ALTER TABLE kb_source ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
+ALTER TABLE kb_source ADD COLUMN IF NOT EXISTS publication text NOT NULL DEFAULT 'published' CHECK (publication IN ('draft','published','disabled'));
+ALTER TABLE kb_source ALTER COLUMN publication SET DEFAULT 'draft';
+
+ALTER TABLE kb_source ADD COLUMN IF NOT EXISTS replaces_id uuid REFERENCES kb_source ON DELETE RESTRICT;
+CREATE UNIQUE INDEX IF NOT EXISTS kb_source_single_replacement ON kb_source(replaces_id) WHERE replaces_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    username text NOT NULL,
+    action text NOT NULL,
+    target text NOT NULL,
+    status_code integer NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_log_time_idx ON audit_log(created_at DESC);
+
+ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+UPDATE chat_session SET updated_at=created_at WHERE updated_at IS NULL;
+ALTER TABLE chat_session ALTER COLUMN updated_at SET DEFAULT now();

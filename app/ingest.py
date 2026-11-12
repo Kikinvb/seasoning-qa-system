@@ -51,7 +51,17 @@ def file_chunks(data, suffix):
 
         with pymupdf.open(stream=data, filetype="pdf") as pdf:
             for page in pdf:
-                yield from parts(page.get_text(sort=True), f"第 {page.number + 1} 页", page_no=page.number + 1)
+                text = page.get_text(sort=True)
+                if not text.strip():
+                    try:
+                        textpage = page.get_textpage_ocr(language="chi_sim+eng", dpi=300, full=True)
+                        text = page.get_text(textpage=textpage, sort=True)
+                    except RuntimeError as exc:
+                        raise ValueError(
+                            f"第 {page.number + 1} 页需要 OCR，但识别失败。"
+                            "请确认已安装 Tesseract 及简体中文、英文语言包。"
+                        ) from exc
+                yield from parts(text, f"第 {page.number + 1} 页", page_no=page.number + 1)
     elif suffix == ".docx":
         from docx import Document
         from docx.table import Table
@@ -176,6 +186,6 @@ def index_source(conn, source):
                 )
                 indexed += len(rows)
         if not indexed:
-            raise ValueError("未提取到文字。请检查文件内容，PDF 需要包含文字层。")
+            raise ValueError("未提取到文字。请检查文件内容；扫描版 PDF 经 OCR 后仍未识别到文字。")
         cursor.execute("UPDATE kb_source SET parse_status='ok' WHERE id=%s", (source["id"],))
 

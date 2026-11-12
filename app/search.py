@@ -11,7 +11,7 @@ eligible AS MATERIALIZED (
     FROM kb_chunk c
     JOIN kb_document d ON d.id=c.document_id
     JOIN kb_source s ON s.id=d.source_id
-    WHERE s.parse_status='ok'
+    WHERE s.parse_status='ok' AND s.publication='published'
       AND (d.publish_date IS NULL OR d.publish_date <= %s)
       AND (
         (d.status NOT IN ('已废止/失效', '即将实施') AND (d.effective_date IS NULL OR d.effective_date <= %s))
