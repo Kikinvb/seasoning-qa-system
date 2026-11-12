@@ -1,0 +1,7 @@
+services:
+  collector:
+    build: .
+    volumes:
+      - ./config:/collector/config:ro
+      - ./output:/collector/output
+    command: ["--config", "config/sources.json", "--output", "output"]
