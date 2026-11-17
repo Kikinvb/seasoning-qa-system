@@ -4,4 +4,5 @@ services:
     volumes:
       - ./config:/collector/config:ro
       - ./output:/collector/output
+    entrypoint: ["python", "pipeline.py"]
     command: ["--config", "config/sources.json", "--output", "output"]

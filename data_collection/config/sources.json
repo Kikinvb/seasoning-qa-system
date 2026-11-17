@@ -8,11 +8,13 @@
       "page_type": "listing",
       "region": "重庆市",
       "publisher": "重庆市市场监督管理局",
-      "date_from": "2021-11-12",
+      "lookback_years": 5,
       "detail_urls": [],
       "list_link_selector": "a[href*='/t20'][href$='.html']",
       "body_selector": ".zwxl-article-con .trs_editor_view",
-      "max_details": 5,
+      "max_details": 100,
+      "pagination": "wcm",
+      "max_list_pages": 3,
       "download_attachments": true
     }
   ]
