@@ -1,0 +1,60 @@
+services:
+  app:
+    env_file:
+      - path: ./.model.env
+        required: false
+    secrets:
+      - warning_integration
+  warning:
+    build:
+      context: ./warning-system
+      additional_contexts:
+        integration: ./warning-integration
+        theme: ./frontend/src
+      dockerfile_inline: |
+        FROM node:24-bookworm-slim AS build
+        WORKDIR /app
+        COPY package*.json ./
+        RUN npm ci
+        COPY tsconfig.json vite.config.ts index.html ./
+        COPY server ./server
+        COPY src ./src
+        COPY --from=theme /theme.css /app/src/theme.css
+        COPY --from=integration /prepare.mjs /tmp/prepare.mjs
+        COPY --from=integration /identity.ts /app/server/identity.ts
+        COPY --from=integration /attachment-process.ts /app/server/attachment-process.ts
+        RUN node /tmp/prepare.mjs && npm run build
+        FROM node:24-bookworm-slim
+        ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000 DATABASE_PATH=/app/data/food-safety.sqlite
+        WORKDIR /app
+        COPY --from=build --chown=node:node /app /app
+        RUN mkdir /app/data && chown node:node /app/data
+        USER node
+        EXPOSE 3000
+        CMD ["npm", "start"]
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./warning-system/.env
+      - path: ./.model.env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATABASE_PATH: /app/data/food-safety.sqlite
+    secrets:
+      - warning_integration
+    volumes:
+      - warning-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  warning-data:
+
+secrets:
+  warning_integration:
+    file: ./.warning-secret

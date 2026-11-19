@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username text UNIQUE NOT NULL,
     password_hash text NOT NULL,
-    role text NOT NULL CHECK (role IN ('user','maintainer','admin')),
+    role text NOT NULL CHECK (role IN ('user','admin')),
     active boolean NOT NULL DEFAULT true
 );
 CREATE TABLE IF NOT EXISTS login_session (
@@ -11,6 +11,20 @@ CREATE TABLE IF NOT EXISTS login_session (
     user_id uuid NOT NULL REFERENCES app_user ON DELETE CASCADE,
     expires_at timestamptz NOT NULL DEFAULT now() + interval '12 hours'
 );
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'app_user'::regclass AND conname = 'app_user_role_check'
+          AND pg_get_constraintdef(oid) LIKE '%maintainer%'
+    ) THEN
+        DELETE FROM login_session WHERE user_id IN (SELECT id FROM app_user WHERE role = 'maintainer');
+        UPDATE app_user SET role = 'user' WHERE role = 'maintainer';
+        ALTER TABLE app_user DROP CONSTRAINT app_user_role_check;
+        ALTER TABLE app_user ADD CONSTRAINT app_user_role_check CHECK (role IN ('user','admin'));
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS kb_source (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     source_type text NOT NULL,
@@ -90,6 +104,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     status_code integer NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_log_time_idx ON audit_log(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS qa_model_prompt (
+    id integer PRIMARY KEY CHECK (id = 1),
+    content text NOT NULL,
+    version integer NOT NULL
+);
 
 ALTER TABLE chat_session ADD COLUMN IF NOT EXISTS updated_at timestamptz;
 UPDATE chat_session SET updated_at=created_at WHERE updated_at IS NULL;

@@ -1,6 +1,10 @@
 .env
+/.model.env
 .venv/
 __pycache__/
 node_modules/
 dist/
+/warning-system/
+/.warning-secret
+/local-backups/
 
