@@ -5,6 +5,7 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {visit, SKIP} from 'unist-util-visit'
 import type {Root, PhrasingContent} from 'mdast'
+import './theme.css'
 import './style.css'
 import Help from './Help'
 
@@ -56,7 +57,8 @@ async function request(path: string, init?: RequestInit) {
   if (response.status === 401 && !path.startsWith('/auth/')) {location.reload(); throw new Error('登录已失效，请重新登录。')}
   if (!response.ok) {
     const error = await response.json().catch(() => ({}))
-    throw new Error(typeof error.detail === 'string' ? error.detail : '请求失败（' + response.status + '）')
+    const message = error.detail ?? error.error
+    throw new Error(typeof message === 'string' ? message : '请求失败（' + response.status + '）')
   }
   return response
 }
@@ -71,7 +73,7 @@ function json(method: string, value: unknown): RequestInit {
 
 type User = {id: string; username: string; role: string; active?: boolean}
 const categories = ['未分类','法律法规','部门规章','国家标准','行业标准','地方标准','企业标准','文献资料','业务资料']
-const roles: Record<string, string> = {user: '业务人员', maintainer: '知识库维护人员', admin: '系统管理员'}
+const roles: Record<string, string> = {user: '用户', admin: '管理员'}
 
 function ResourceModal({label, onClose, children}: {label: string; onClose: () => void; children: ReactNode}) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -88,7 +90,7 @@ function ResourceModal({label, onClose, children}: {label: string; onClose: () =
   }}>{children}</dialog>
 }
 
-function AccountMenu({user, onPassword}: {user: User; onPassword: () => void}) {
+function AccountMenu({user, onPassword, onHelp}: {user: User; onPassword: () => void; onHelp: () => void}) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -101,31 +103,48 @@ function AccountMenu({user, onPassword}: {user: User; onPassword: () => void}) {
   },[open])
   return <div className="account-menu" ref={root} onBlur={e => {if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false)}}>
     <button ref={trigger} className="account-trigger" aria-expanded={open} aria-controls="account-actions" onClick={() => setOpen(!open)}><span className="account-avatar" aria-hidden="true">{user.username.slice(0,1).toUpperCase()}</span><span className="account-identity"><strong>{user.username}</strong><small>{roles[user.role]}</small></span><svg className={open ? 'expanded' : ''} viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5"/></svg></button>
-    {open && <div id="account-actions" className="account-dropdown"><div className="account-dropdown-heading"><strong>{user.username}</strong><small>{roles[user.role]}</small></div><button onClick={() => {setOpen(false); onPassword()}}>修改密码<span aria-hidden="true">→</span></button><button className="account-logout" onClick={() => void api('/auth/logout',{method:'POST'}).then(() => {location.hash='/home'; location.reload()}).catch(e => window.alert(e.message))}>退出登录<span aria-hidden="true">↗</span></button></div>}
+    {open && <div id="account-actions" className="account-dropdown"><div className="account-dropdown-heading"><strong>{user.username}</strong><small>{roles[user.role]}</small></div><button onClick={() => {setOpen(false); onPassword()}}>修改密码<span aria-hidden="true">→</span></button><button onClick={() => {setOpen(false); onHelp()}}>使用帮助<span aria-hidden="true">↗</span></button><button className="account-logout" onClick={() => void api('/auth/logout',{method:'POST'}).then(() => {location.hash='/chat'; location.reload()}).catch(e => window.alert(e.message))}>退出登录<span aria-hidden="true">↗</span></button></div>}
   </div>
 }
 
-type Page = 'home' | 'chat' | 'library' | 'maintenance' | 'tasks' | 'users' | 'audit' | 'help'
-const pageTitles: Record<Page,string> = {home:'工作台',chat:'问答助手',library:'资料中心',maintenance:'知识库维护',tasks:'导入任务',users:'用户管理',audit:'操作日志',help:'使用帮助'}
+const adminGroups = [
+  {label: '预警管理', pages: ['overview', 'news', 'alerts', 'settings']},
+  {label: '知识库管理', pages: ['maintenance', 'tasks']},
+  {label: '系统管理', pages: ['models', 'users', 'audit']},
+] as const
+const systemName = '调味品安全风险监测预警及问答系统'
+const pageTitles = {
+  chat: '标准问答', warning: '风险预警', help: '使用帮助',
+  overview: '任务中心', news: '新闻数据库', alerts: '预警管理', settings: '采集配置', models: '模型管理',
+  maintenance: '知识库维护', tasks: '导入任务', users: '用户管理', audit: '操作日志',
+}
+type Page = keyof typeof pageTitles
+const adminPages = new Set<Page>(adminGroups.flatMap(group => [...group.pages]))
+const warningTabs = new Set<Page>(adminGroups[0].pages)
+function pageHash(page: Page) {
+  return '#/' + (adminPages.has(page) ? 'admin/' : '') + page
+}
 function allowedPage(user: User): Page {
-  const value = location.hash.replace(/^#\/?/, '') as Page
-  if (!Object.prototype.hasOwnProperty.call(pageTitles, value)) return 'home'
-  if ((value === 'users' || value === 'audit') && user.role !== 'admin') return 'home'
-  if ((value === 'maintenance' || value === 'tasks') && user.role === 'user') return 'home'
+  const route = location.hash.replace(/^#\/?/, '')
+  const value = (route === 'admin' ? 'overview' : route.replace(/^admin\//, '')) as Page
+  if (!Object.prototype.hasOwnProperty.call(pageTitles, value) || (adminPages.has(value) && user.role !== 'admin')) return 'chat'
   return value
 }
 
 function App({user}: {user: User}) {
-  const pendingDetail = useRef<string | undefined>(undefined)
   const [page, updatePage] = useState<Page>(() => allowedPage(user))
-  const setPage = (value: Page) => {location.hash = '/' + value}
-  const canMaintain = user.role !== 'user'
+  const setPage = (value: Page) => {location.hash = pageHash(value)}
+  const canMaintain = user.role === 'admin'
   const managing = page === 'maintenance' && canMaintain
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [adminExpanded, setAdminExpanded] = useState<Record<string, boolean>>({})
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(true)
+  const [mainSidebarOpen, setMainSidebarOpen] = useState(true)
+  const [chatSidebarWidth, setChatSidebarWidth] = useState(280)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [taskStatus, setTaskStatus] = useState('')
   useEffect(() => {
-    const sync = () => {const next = allowedPage(user); updatePage(next); setDetailId(next === 'library' ? pendingDetail.current : undefined); pendingDetail.current = undefined; setEditing(undefined); setCitation(undefined); setError(''); setNotice(''); if (location.hash !== '#/'+next) location.replace('#/'+next)}
+    const sync = () => {const next = allowedPage(user); updatePage(next); setDetailId(undefined); setEditing(undefined); setCitation(undefined); setError(''); setNotice(''); if (location.hash !== pageHash(next)) location.replace(pageHash(next))}
     sync(); window.addEventListener('hashchange', sync)
     return () => window.removeEventListener('hashchange', sync)
   }, [user])
@@ -159,7 +178,7 @@ function App({user}: {user: User}) {
     void api<{model: string; configured: boolean}>('/status').then(setModel).catch(showError)
   }, [])
   useEffect(() => {
-    if (!['home','library','maintenance','tasks'].includes(page)) return
+    if (page !== 'maintenance' && page !== 'tasks') return
     void refreshSources().catch(showError)
     const timer = window.setInterval(() => void refreshSources().catch(showError), 2000)
     return () => window.clearInterval(timer)
@@ -272,36 +291,84 @@ function App({user}: {user: User}) {
   }
 
   return <div className="layout">
-    <aside className="sidebar">
-      <div className="brand"><img className="brand-logo" src={logo} alt="" /><div>食品安全助手<small>调味品知识与问答</small></div></div>
-      <button className="primary" disabled={busy} onClick={() => void openChat()}>＋ 新对话</button>
-      <nav className="sidebar-nav" aria-label="功能导航"><button className={page === 'home' ? 'selected' : ''} disabled={busy} onClick={() => setPage('home')}>⌂ <span>工作台</span></button><button className={page === 'library' ? 'selected' : ''} disabled={busy} onClick={() => setPage('library')}>▤ <span>资料中心</span></button>
-      {canMaintain && <details className="sidebar-management"><summary>管理 <span>⌄</span></summary>{(['maintenance','tasks',...(user.role === 'admin' ? ['users','audit'] : [])] as Page[]).map(item => <button key={item} className={page === item ? 'selected' : ''} disabled={busy} onClick={() => setPage(item)}>{pageTitles[item]}</button>)}</details>}</nav>
-      <div className="history"><div className="history-heading"><small>最近会话</small><button disabled={busy} onClick={() => setHistoryOpen(true)}>搜索 / 全部</button></div>{chats.slice(0,10).map(chat => <div key={chat.id} className={'history-row' + (page === 'chat' && chat.id === session ? ' selected' : '')}>
-        <button className="history-title" title={chat.title} disabled={busy} onClick={() => void openChat(chat.id)}>{chat.title}</button>
-        <details className="chat-options"><summary aria-label={'操作会话：'+chat.title}>⋯</summary><div><button disabled={busy} onClick={async () => {const title=window.prompt('重命名会话',chat.title); if(!title?.trim()) return; try {await api('/chats/'+chat.id,json('PATCH',{title})); await refreshChats()} catch(e) {showError(e)}}}>重命名</button><button disabled={busy} onClick={() => void deleteChat(chat)}>删除</button></div></details>
-      </div>)}{!chats.length && <p className="history-empty">暂无会话</p>}</div>
-      <button className="sidebar-help" onClick={() => setPage('help')}>使用帮助 ↗</button>
+    <aside className={mainSidebarOpen ? 'sidebar' : 'sidebar sidebar-collapsed'} aria-label="主导航侧栏">
+      <div className="sidebar-heading">
+        <div className="brand" title={systemName}><img className="brand-logo" src={logo} alt="" /><div>{systemName}</div></div>
+        <button className="sidebar-toggle" aria-label={mainSidebarOpen ? '收起主导航' : '展开主导航'} title={mainSidebarOpen ? '收起主导航' : '展开主导航'}
+          aria-expanded={mainSidebarOpen} aria-controls="main-navigation" onClick={() => setMainSidebarOpen(open => !open)}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14m7-10-3 3 3 3"/></svg>
+        </button>
+      </div>
+      <nav className="sidebar-nav" id="main-navigation" aria-label="功能导航">
+        {(['chat', 'warning'] as const).map(item => <button key={item} aria-label={pageTitles[item]} title={mainSidebarOpen ? undefined : pageTitles[item]} aria-current={page === item ? 'page' : undefined} disabled={busy} onClick={() => setPage(item)}>
+          <svg viewBox="0 0 24 24" aria-hidden="true">{item === 'chat'
+            ? <path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H5l1.5-4A7.5 7.5 0 1 1 20 11.5ZM9 12h7m-7 3h4"/>
+            : <path d="M12 3 4 6v5c0 4.5 3.2 8 8 10 4.8-2 8-5.5 8-10V6l-8-3Zm0 5v4m0 3h.01"/>}</svg>
+          <span>{pageTitles[item]}</span>
+        </button>)}
+        {canMaintain && <button aria-label="开发者工作台" title={mainSidebarOpen ? undefined : '开发者工作台'} aria-current={adminPages.has(page) ? 'page' : undefined} disabled={busy} onClick={() => setPage('overview')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16m-10 0v10"/></svg>
+          <span>开发者工作台</span>
+        </button>}
+      </nav>
       <div className="model" title={model?.configured ? 'API 已配置' : '等待配置 API 密钥'}><span className={model?.configured ? 'dot ready' : 'dot'} />{model?.model === 'deepseek-flash' || !model ? 'DeepSeek Flash' : model.model}{model && !model.configured && ' · 待配置'}</div>
     </aside>
     <main>
-      <header><span>{pageTitles[page]}</span><AccountMenu user={user} onPassword={() => setPasswordOpen(true)}/></header>
+      <header className="workspace-header"><span className="workspace-title">{adminPages.has(page) ? '开发者工作台' : pageTitles[page]}</span><AccountMenu user={user} onPassword={() => setPasswordOpen(true)} onHelp={() => setPage('help')}/></header>
       {error && <div className="alert" role="alert">{error}</div>}
       {notice && <div className="notice" role="status">{notice}</div>}
-      {page === 'home' ? <section className="library dashboard">
-        <div className="dashboard-welcome"><span className="eyebrow">食品安全 · 日常工作</span><h1>你好，{user.username}</h1><p>{user.role === 'admin' ? '管理人员访问，查看系统操作，保持知识库有序运行。' : canMaintain ? '更新资料、跟踪导入，让知识库保持可用。' : '从一个问题开始，或查阅你需要的资料。'}</p></div>
-        <div className="dashboard-actions">
-          <button className="dashboard-main" onClick={() => user.role === 'admin' ? setPage('users') : canMaintain ? setPage('maintenance') : void openChat()}><span>{user.role === 'admin' ? '人员与权限' : canMaintain ? '资料更新' : '知识问答'}</span><strong>{user.role === 'admin' ? '管理用户' : canMaintain ? '维护知识库' : '开始新对话'} <span aria-hidden="true">↗</span></strong><small>{user.role === 'admin' ? '创建账号、分配角色与管理访问权限' : canMaintain ? '上传文件、更新版本与发布资料' : '围绕食品、指标和标准连续提问'}</small></button>
-          <button onClick={() => setPage(user.role === 'admin' ? 'audit' : 'library')}><span className="eyebrow">{user.role === 'admin' ? '变更追踪' : '资料查阅'}</span><strong>{user.role === 'admin' ? '查看操作日志' : '打开资料中心'} →</strong><small>{user.role === 'admin' ? '核查资料维护与账号管理记录' : '浏览已收录文件和版本信息'}</small></button>
-          <button onClick={() => canMaintain ? setPage('tasks') : setPage('help')}><span className="eyebrow">{canMaintain ? '处理进度' : '操作指南'}</span><strong>{canMaintain ? '查看导入任务' : '使用帮助'} →</strong><small>{canMaintain ? `${sources.filter(s => ['pending','processing'].includes(s.parse_status)).length} 个处理中 · ${sources.filter(s => s.parse_status === 'failed').length} 个失败` : '了解问答、资料和账号的使用方式'}</small></button>
-        </div>
-        <div className="dashboard-columns"><section className="dashboard-section"><div className="dashboard-section-head"><h2>最新资料</h2><button onClick={() => setPage('library')}>全部资料 →</button></div><p className="dashboard-caption">按收录时间展示已发布资料</p>{sources.filter(s => s.publication === 'published').slice(0,5).map(source => <button className="dashboard-list-item" key={source.id} onClick={() => {pendingDetail.current=source.id; setPage('library')}}><span><strong>{source.filename}</strong><small>{source.category} · 收录于 {new Date(source.created_at).toLocaleDateString()}</small></span><span aria-hidden="true">→</span></button>)}{!sources.some(s => s.publication === 'published') && <p className="library-empty">暂无已发布资料</p>}</section>
-        <section className="dashboard-section"><div className="dashboard-section-head"><h2>最近对话</h2><button onClick={() => void openChat()}>新对话 →</button></div>{chats.slice(0,5).map(chat => <button className="dashboard-list-item" key={chat.id} onClick={() => void openChat(chat.id)}><strong>{chat.title}</strong><span aria-hidden="true">→</span></button>)}{!chats.length && <p className="library-empty">还没有对话，从一个问题开始。</p>}<button className="dashboard-help" onClick={() => setPage('help')}>需要帮助？查看使用指南 →</button></section></div>
-      </section> : page === 'chat' ? <>
+      {adminPages.has(page) && <nav className="unified-admin-tabs" aria-label="后台导航">
+        {adminGroups.map((group, index) => {
+          const active = group.pages.some(item => item === page)
+          const expanded = adminExpanded[group.label] ?? active
+          const id = `admin-group-${index}`
+          return <div key={group.label} className="unified-admin-group">
+            <button className="admin-group-toggle" aria-expanded={expanded} aria-controls={id}
+              onClick={() => setAdminExpanded(previous => ({...previous, [group.label]: !expanded}))}>
+              {group.label}<span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+            </button>
+            <div id={id} className="admin-group-links" hidden={!expanded}>
+              {group.pages.map(item => <button key={item} aria-current={page === item ? 'page' : undefined} onClick={() => setPage(item)}>{pageTitles[item]}</button>)}
+            </div>
+          </div>
+        })}
+      </nav>}
+      <div className={adminPages.has(page) ? 'unified-content unified-admin' : 'unified-content'}>
+      {page === 'warning' || warningTabs.has(page) ? <iframe className="warning-frame" title={pageTitles[page]} src={'/api/warning-ui/?view=' + (page === 'warning' ? 'dashboard' : page)}/> : page === 'chat' ? <div className="chat-layout">
+        <aside className={chatSidebarOpen ? 'chat-sidebar' : 'chat-sidebar chat-sidebar-collapsed'} aria-label="会话侧栏" style={{width: chatSidebarOpen ? chatSidebarWidth : undefined}}>
+          <div className="chat-sidebar-actions">
+            {chatSidebarOpen && <button className="new-chat-button" disabled={busy} onClick={() => void openChat()}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建会话
+            </button>}
+            <button className="chat-panel-toggle" aria-label={chatSidebarOpen ? '收起会话侧栏' : '展开会话侧栏'} title={chatSidebarOpen ? '收起会话侧栏' : '展开会话侧栏'} aria-expanded={chatSidebarOpen} aria-controls="recent-chats" onClick={() => setChatSidebarOpen(open => !open)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14m7-10-3 3 3 3"/></svg>
+            </button>
+          </div>
+      <div className="history" id="recent-chats" hidden={!chatSidebarOpen}><div className="history-heading"><small>最近会话</small><button disabled={busy} onClick={() => setHistoryOpen(true)}>搜索 / 全部</button></div>{chats.slice(0,10).map(chat => <div key={chat.id} className={'history-row' + (chat.id === session ? ' selected' : '')}>
+        <button className="history-title" title={chat.title} disabled={busy} onClick={() => void openChat(chat.id)}>{chat.title}</button>
+        <details className="chat-options"><summary aria-label={'操作会话：'+chat.title}>⋯</summary><div><button disabled={busy} onClick={async () => {const title=window.prompt('重命名会话',chat.title); if(!title?.trim()) return; try {await api('/chats/'+chat.id,json('PATCH',{title})); await refreshChats()} catch(e) {showError(e)}}}>重命名</button><button disabled={busy} onClick={() => void deleteChat(chat)}>删除</button></div></details>
+      </div>)}{!chats.length && <p className="history-empty">暂无会话</p>}</div>
+        </aside>
+        {chatSidebarOpen && <div className="chat-sidebar-resizer" role="separator" tabIndex={0}
+          aria-label="调整会话侧栏宽度" aria-orientation="vertical" aria-controls="recent-chats"
+          onPointerDown={e => e.currentTarget.setPointerCapture(e.pointerId)}
+          onPointerMove={e => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+            const layout = e.currentTarget.parentElement!.getBoundingClientRect()
+            setChatSidebarWidth(Math.round(Math.max(160, Math.min(layout.width * .45, e.clientX - layout.left))))
+          }}
+          onKeyDown={e => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+            e.preventDefault()
+            const max = e.currentTarget.parentElement!.clientWidth * .45
+            const width = e.currentTarget.previousElementSibling!.getBoundingClientRect().width
+            setChatSidebarWidth(Math.round(Math.max(160, Math.min(max, width + (e.key === 'ArrowRight' ? 16 : -16)))))
+          }}/>}
+        <div className="chat-content">
         <section className="conversation" aria-label="对话">
           {messages.length === 0 && <div className="welcome">
-            <img className="welcome-logo" src={logo} alt="" /><h1>今天想了解什么？</h1>
-            <p>可以问日常问题，也可以查调味品标准。相关资料会随答案附上。</p>
+            <img className="welcome-logo" src={logo} alt="" /><h1>调味品安全问答</h1>
+            <p>可查询调味品标准、检测指标与安全要求，并通过回答中的引用核对原文。</p>
           </div>}
           {messages.map((message, index) => <article key={index} className={'message ' + message.role}>
             <div className="speaker">{message.role === 'user' ? '你' : '知识库助手'}</div>
@@ -344,7 +411,7 @@ function App({user}: {user: User}) {
           <div ref={end} />
         </section>
         <form className="composer" onSubmit={event => {event.preventDefault(); void ask(draft)}}>
-          <textarea rows={1} value={draft} maxLength={2000} onChange={event => setDraft(event.target.value)} aria-label="问题" placeholder="输入你的问题…" onKeyDown={event => {
+          <textarea rows={1} value={draft} maxLength={2000} onChange={event => setDraft(event.target.value)} aria-label="问题" placeholder="输入调味品名称、指标或想核查的问题…" onKeyDown={event => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {event.preventDefault(); void ask(draft)}
           }} />
           <button className="send-button" type="submit" aria-label={busy ? '回答中' : '发送问题'} title={busy ? '回答中' : '发送问题'} disabled={busy || !draft.trim()}>
@@ -353,14 +420,15 @@ function App({user}: {user: User}) {
             </svg>
           </button>
         </form>
-      </> : page === 'help' ? <Help role={user.role}/> : page === 'audit' ? <AuditLog /> : page === 'users' ? <UserManagement /> : page === 'tasks' ? <section className="library">
+        </div>
+      </div> : page === 'help' ? <Help role={user.role}/> : page === 'models' ? <ModelManagement /> : page === 'audit' ? <AuditLog /> : page === 'users' ? <UserManagement /> : page === 'tasks' ? <section className="library">
         <h1>导入任务</h1><p>查看文件处理进度，失败任务可重试。每两秒自动更新。</p>
         <div className="task-summary">{Object.entries(statuses).map(([key,label]) => <button key={key} className={taskStatus === key ? 'selected' : ''} onClick={() => setTaskStatus(taskStatus === key ? '' : key)}><strong>{sources.filter(s => s.parse_status === key).length}</strong><span>{label}</span></button>)}</div>
         <div className="library-toolbar"><h2>任务记录</h2><select className="library-category" aria-label="筛选任务状态" value={taskStatus} onChange={e => setTaskStatus(e.target.value)}><option value="">全部状态</option>{Object.entries(statuses).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</select></div>
         {sources.filter(s => !taskStatus || s.parse_status === taskStatus).map(source => <article className="source task-row" key={source.id}><div><strong>{source.filename}</strong><p>{new Date(source.created_at).toLocaleString()} · {statuses[source.parse_status]}</p><small>{source.documents} 份文档 · {source.chunks} 条切片</small>{source.parse_error && <p className="task-error">{source.parse_error}</p>}</div><div className="actions"><a href={'/api/sources/'+source.id+'/file'}>原文件</a>{source.parse_status === 'failed' && <button onClick={() => void changeSource('/sources/'+source.id+'/retry',{method:'POST'})}>重试导入</button>}</div></article>)}
         {!sources.some(s => !taskStatus || s.parse_status === taskStatus) && <div className="library-empty">暂无匹配的导入任务</div>}
       </section> : <section className="library">
-        <h1>{managing ? '知识库维护' : '资料中心'}</h1><p>{managing ? '上传、更新和发布资料，维护知识库的有效版本。' : '按文件名或分类查阅资料，查看原文件和版本信息。'}</p>
+        <h1>知识库维护</h1><p>上传、更新和发布资料，维护知识库的有效版本。</p>
         {managing && <div className="upload-box">
           <h2>导入资料</h2><p>支持 XLSX、DOCX、文字版 PDF 和 UTF-8 CSV，每份最多 25 MB。</p>
           <div className="actions">
@@ -415,6 +483,7 @@ function App({user}: {user: User}) {
           </div>
         </article>)}
       </section>}
+      </div>
     </main>
     {historyOpen && <ResourceModal label="搜索会话历史" onClose={() => setHistoryOpen(false)}><ChatHistory onClose={() => setHistoryOpen(false)} onOpen={id => {setHistoryOpen(false); void openChat(id)}}/></ResourceModal>}
     {passwordOpen && <ResourceModal label="修改密码" onClose={() => setPasswordOpen(false)}><PasswordForm /></ResourceModal>}
@@ -466,6 +535,72 @@ function PasswordForm() {
   }}><div className="resource-panel-head"><h2>修改密码</h2></div><div className="resource-panel-body resource-form"><label className="full-width">当前密码<input name="current_password" type="password" required maxLength={128} autoComplete="current-password"/></label><label className="full-width">新密码<input name="password" type="password" required minLength={10} maxLength={128} autoComplete="new-password"/></label><label className="full-width">确认新密码<input name="confirm" type="password" required minLength={10} maxLength={128} autoComplete="new-password"/></label>{error && <p role="alert" className="full-width">{error}</p>}<small className="full-width">至少10位，保存后需要重新登录。按 Esc 可关闭。</small></div><div className="resource-panel-footer"><button className="primary">保存并重新登录</button></div></form>
 }
 
+type ModelSettings = {
+  model: {name: string; baseUrl: string; configured: boolean}
+  prompt: {content: string; version?: number; id?: number}
+}
+
+function ModelManagement() {
+  return <section className="library">
+    <h1>模型管理</h1>
+    <p>集中查看问答与预警的模型连接，分别维护业务提示词。共享连接由服务器配置，API 密钥不会显示在页面上。</p>
+    <ModelPanel title="标准问答" path="/admin/model" testPath="/admin/model/test" minLength={1}/>
+    <ModelPanel title="风险预警" path="/warning/admin/config" testPath="/warning/admin/model/test" minLength={100}/>
+  </section>
+}
+
+function ModelPanel({title, path, testPath, minLength}: {title: string; path: string; testPath: string; minLength: number}) {
+  const [settings, setSettings] = useState<ModelSettings>()
+  const [draft, setDraft] = useState('')
+  const [pending, setPending] = useState<'load' | 'save' | 'test' | undefined>('load')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  async function run(action: 'load' | 'save' | 'test') {
+    setPending(action)
+    setMessage('')
+    setError('')
+    try {
+      if (action === 'test') {
+        await api(testPath, {method: 'POST'})
+        setMessage('已保存的配置测试通过。')
+      } else {
+        if (action === 'save') await api(path, json('PUT', {prompt: draft.trim()}))
+        const saved = await api<ModelSettings>(path)
+        setSettings(saved)
+        setDraft(saved.prompt.content)
+        if (action === 'save') setMessage('提示词已保存，后续请求将使用新版。')
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setPending(undefined)
+    }
+  }
+  useEffect(() => {void run('load')}, [path])
+
+  return <form className="resource-panel" aria-busy={!!pending} onSubmit={e => {e.preventDefault(); void run('save')}}>
+    <div className="resource-panel-head"><h2>{title}</h2>
+      {settings && <span>{settings.model.configured ? '密钥已配置' : '密钥未配置'}</span>}
+    </div>
+    <div className="resource-panel-body resource-form">
+      {error && <p className="alert full-width" role="alert">{error}</p>}
+      {message && <p className="notice full-width" role="status">{message}</p>}
+      {settings ? <>
+        <div><small>模型名称</small><div>{settings.model.name}</div></div>
+        <div><small>接口地址</small><div className="model-endpoint">{settings.model.baseUrl || '服务内置地址'}</div></div>
+        <label className="full-width">系统提示词 · 版本 {settings.prompt.version ?? settings.prompt.id}
+          <textarea rows={12} required minLength={minLength} maxLength={30000} value={draft} disabled={!!pending} onChange={e => setDraft(e.target.value)}/>
+        </label>
+      </> : pending ? <p role="status">正在读取配置…</p> : <button type="button" onClick={() => void run('load')}>重新加载</button>}
+    </div>
+    {settings && <div className="resource-panel-footer">
+      <button type="button" disabled={!!pending || !settings.model.configured} onClick={() => void run('test')}>{pending === 'test' ? '正在测试…' : '测试已保存配置'}</button>
+      <button className="primary" disabled={!!pending || draft.trim() === settings.prompt.content || draft.trim().length < minLength}>{pending === 'save' ? '正在保存…' : '保存提示词'}</button>
+    </div>}
+  </form>
+}
+
 function UserManagement() {
   const [users, setUsers] = useState<User[]>([])
   const [account, setAccount] = useState<User>()
@@ -487,6 +622,7 @@ function Entry() {
   const [user, setUser] = useState<User>()
   const [setup, setSetup] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {void (async () => {
     try {const state = await api<{setup_required:boolean}>('/auth/state'); setSetup(state.setup_required)
@@ -495,9 +631,34 @@ function Entry() {
   })()}, [])
   if (loading) return <div className="login">正在加载…</div>
   if (user) return <App user={user}/>
-  return <div className="login"><form className="login-card" onSubmit={async e => {
-    e.preventDefault(); const value = Object.fromEntries(new FormData(e.currentTarget)); setError('')
-    try {if (setup) await api('/auth/setup', json('POST', value)); await api('/auth/login', json('POST',value)); setUser(await api<User>('/auth/me'))} catch(e) {setError((e as Error).message); const state = await api<{setup_required:boolean}>('/auth/state'); setSetup(state.setup_required)}
-  }}><img src={logo} width="48"/><h1>{setup ? '初始化管理员' : '登录食品安全助手'}</h1><p>{setup ? '首次使用，请创建管理员账号。历史会话将归属此账号。' : '请使用管理员分配的账号登录。'}</p><label>账号<input name="username" required maxLength={64} autoComplete="username"/></label><label>密码<input name="password" type="password" required minLength={10} maxLength={128} autoComplete={setup ? 'new-password' : 'current-password'}/></label>{error && <p role="alert">{error}</p>}<button className="primary">{setup ? '创建并进入系统' : '登录'}</button></form></div>
+  return <div className="login"><form className="login-card" aria-busy={submitting} onSubmit={async e => {
+    e.preventDefault()
+    if (submitting) return
+    const value = Object.fromEntries(new FormData(e.currentTarget))
+    setError('')
+    setSubmitting(true)
+    try {
+      if (setup) {
+        await api('/auth/setup', json('POST', value))
+        setSetup(false)
+      }
+      await api('/auth/login', json('POST', value))
+      setUser(await api<User>('/auth/me'))
+    } catch (e) {
+      setError((e as Error).message)
+      const state = await api<{setup_required: boolean}>('/auth/state').catch(() => undefined)
+      if (state) setSetup(state.setup_required)
+    } finally {
+      setSubmitting(false)
+    }
+  }}>
+    <img src={logo} width="48" alt=""/>
+    <h1>{systemName}</h1>
+    <p>{setup ? '首次使用，请创建系统管理员账号。' : '登录后可查看风险预警、使用知识库问答。'}</p>
+    <label>账号<input name="username" required maxLength={64} autoComplete="username" disabled={submitting}/></label>
+    <label>密码<input name="password" type="password" required minLength={10} maxLength={128} autoComplete={setup ? 'new-password' : 'current-password'} disabled={submitting}/></label>
+    {error && <p role="alert">{error}</p>}
+    <button className="primary" disabled={submitting}>{submitting ? (setup ? '正在创建账号…' : '正在登录…') : (setup ? '创建管理员并登录' : '登录')}</button>
+  </form></div>
 }
 createRoot(document.getElementById('root')!).render(<Entry />)

@@ -26,6 +26,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .ingest import FORMATS, SEED_FILE, index_source, queue_source
 from .search import retrieve
+from .warning import router as warning_router
 
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT.parent / "frontend" / "dist"
@@ -90,13 +91,14 @@ async def lifespan(app):
             worker.join(timeout=5)
 
 
-app = FastAPI(title="调味品食品安全问答助手", lifespan=lifespan)
+app = FastAPI(title="调味品安全风险监测预警及问答系统", lifespan=lifespan)
+app.include_router(warning_router)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]"])
 
 
 @app.middleware("http")
 async def protect_local_api(request: Request, call_next):
-    if request.method in {"POST", "PATCH", "DELETE"}:
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         origin = request.headers.get("origin")
         local_origin = f"{request.url.scheme}://{request.headers.get('host')}"
         if origin and origin != local_origin:
@@ -107,9 +109,9 @@ async def protect_local_api(request: Request, call_next):
             if not user:
                 return JSONResponse({"detail": "请先登录。"}, status_code=401)
             request.state.user = user
-            if request.url.path.startswith(("/api/users", "/api/audit")) and user["role"] != "admin":
+            if request.url.path.startswith(("/api/users", "/api/audit", "/api/admin/model")) and user["role"] != "admin":
                 return JSONResponse({"detail": "需要管理员权限。"}, status_code=403)
-            if request.url.path.startswith("/api/sources") and request.method != "GET" and user["role"] not in {"admin", "maintainer"}:
+            if request.url.path.startswith("/api/sources") and request.method != "GET" and user["role"] != "admin":
                 return JSONResponse({"detail": "需要知识库维护权限。"}, status_code=403)
             if request.url.path.startswith("/api/chats/"):
                 chat_id = request.url.path.split("/")[3]
@@ -121,7 +123,8 @@ async def protect_local_api(request: Request, call_next):
 @app.middleware("http")
 async def audit_operations(request: Request, call_next):
     path = request.url.path
-    tracked = request.method in {"POST", "PATCH", "DELETE"} and (path.startswith(("/api/sources", "/api/users")) or path == "/api/auth/password")
+    model_prompt = request.method == "PUT" and path in {"/api/admin/model", "/api/warning/admin/config"}
+    tracked = model_prompt or (request.method in {"POST", "PUT", "PATCH", "DELETE"} and (path.startswith(("/api/sources", "/api/users")) or path == "/api/auth/password"))
     target = ""
     if tracked:
         parts = path.split("/")
@@ -138,6 +141,8 @@ async def audit_operations(request: Request, call_next):
         labels = {"sources": "上传资料", "users": "创建账号", "seed": "导入首批资料", "retry": "重试导入", "replacement": "上传新版本", "active": "启停账号", "password": "修改本人密码"}
         last = path.rsplit("/", 1)[-1]
         action = labels.get(last, "编辑资料与发布" if path.startswith("/api/sources") else "调整角色或密码")
+        if model_prompt:
+            action, target = ("保存问答提示词", "问答") if path == "/api/admin/model" else ("保存预警配置", "预警")
         if request.method == "DELETE":
             action = "删除资料"
         try:
@@ -233,7 +238,7 @@ class AccountUpdate(BaseModel):
 
 @app.patch("/api/users/{user_id}")
 def update_account(user_id: UUID, value: AccountUpdate, request: Request):
-    if value.role not in {"admin", "maintainer", "user"}:
+    if value.role not in {"admin", "user"}:
         raise HTTPException(400, "角色无效。")
     if user_id == request.state.user["id"]:
         raise HTTPException(400, "请使用修改密码入口管理本人账号，不能调整自身角色。")
@@ -253,7 +258,7 @@ def users():
 @app.post("/api/users")
 def create_user(value: NewUser, request: Request):
     request.state.audit_target = value.username.strip()
-    if value.role not in {"admin", "maintainer", "user"} or not value.username.strip():
+    if value.role not in {"admin", "user"} or not value.username.strip():
         raise HTTPException(400, "账号或角色无效。")
     with db() as conn:
         item = conn.execute("INSERT INTO app_user(username,password_hash,role) VALUES (%s,%s,%s) ON CONFLICT(username) DO NOTHING RETURNING id", (value.username.strip(), hash_password(value.password), value.role)).fetchone()
@@ -273,9 +278,72 @@ def toggle_user(user_id: UUID, request: Request):
     return {"ok": True}
 
 @app.get("/api/status")
-def status():
-    return {"model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), "configured": bool(os.getenv("DEEPSEEK_API_KEY"))}
+def get_status():
+    key, _, model = model_config()
+    return {"model": model, "configured": bool(key)}
 
+
+def model_config():
+    return (
+        os.getenv("MODEL_API_KEY") or os.getenv("DEEPSEEK_API_KEY"),
+        (os.getenv("MODEL_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/"),
+        os.getenv("MODEL_NAME") or os.getenv("DEEPSEEK_MODEL") or "deepseek-flash",
+    )
+
+
+def qa_prompt():
+    with db() as conn:
+        return conn.execute("SELECT content, version FROM qa_model_prompt WHERE id=1").fetchone() or {"content": SYSTEM, "version": 1}
+
+
+@app.get("/api/admin/model")
+def qa_model_settings():
+    key, base_url, name = model_config()
+    return {"model": {"name": name, "baseUrl": base_url, "configured": bool(key)}, "prompt": qa_prompt()}
+
+
+class ModelPrompt(BaseModel):
+    prompt: str = Field(min_length=1, max_length=30000)
+
+
+@app.put("/api/admin/model")
+def save_qa_model_prompt(value: ModelPrompt):
+    prompt = value.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "请输入问答提示词。")
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO qa_model_prompt(id, content, version) VALUES (1, %s, 2)
+               ON CONFLICT (id) DO UPDATE SET content=excluded.content, version=qa_model_prompt.version+1
+               WHERE qa_model_prompt.content IS DISTINCT FROM excluded.content""",
+            (prompt,),
+        )
+    return qa_model_settings()
+
+
+@app.post("/api/admin/model/test")
+async def test_qa_model():
+    key, base_url, model = model_config()
+    if not key:
+        raise HTTPException(503, "问答模型密钥尚未配置。")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                base_url + "/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={"model": model, "max_tokens": 64, "thinking": {"type": "disabled"}, "messages": [
+                    {"role": "system", "content": qa_prompt()["content"]},
+                    {"role": "user", "content": "这是连接测试，请简短确认可以回答问题。"},
+                ]},
+            )
+            response.raise_for_status()
+            if not response.json()["choices"][0]["message"]["content"]:
+                raise ValueError("empty response")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, f"问答模型接口返回 HTTP {exc.response.status_code}。") from None
+    except (httpx.RequestError, ValueError, KeyError, IndexError, TypeError):
+        raise HTTPException(502, "问答模型连接失败或返回格式异常。") from None
+    return {"ok": True}
 
 @app.get("/api/sources")
 def sources():
@@ -486,11 +554,11 @@ def event(kind, value):
 @app.post("/api/chats/{session_id}/ask")
 async def ask(session_id: UUID, request: Question):
     question = request.question.strip()
-    key = os.getenv("DEEPSEEK_API_KEY")
+    key, base_url, model = model_config()
     if not question:
         raise HTTPException(400, "请输入问题。")
     if not key:
-        raise HTTPException(503, "请先在 .env 配置 DEEPSEEK_API_KEY，再重建应用容器。")
+        raise HTTPException(503, "问答模型密钥尚未配置，请联系管理员。")
     if session_id in active_sessions:
         raise HTTPException(409, "当前会话正在回答。")
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
@@ -517,14 +585,14 @@ async def ask(session_id: UUID, request: Question):
                 for index, item in enumerate(citations, 1)
             ]
             messages = [
-                {"role": "system", "content": SYSTEM},
+                {"role": "system", "content": qa_prompt()["content"]},
                 {"role": "user", "content": json.dumps(
                     {"question": question, "prior_question": prior, "as_of": str(as_of), "evidence": evidence},
                     ensure_ascii=False,
                 )},
             ]
-            url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/") + "/chat/completions"
-            payload = {"model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"), "messages": messages,
+            url = base_url + "/chat/completions"
+            payload = {"model": model, "messages": messages,
                        "stream": True, "max_tokens": 1800, "thinking": {"type": "disabled"}}
             chunks = []
             complete = False

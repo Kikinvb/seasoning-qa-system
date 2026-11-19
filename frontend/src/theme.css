@@ -1,0 +1,42 @@
+:root {
+  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --page: #f5f8f6;
+  --surface: #fff;
+  --surface-soft: #edf4f0;
+  --surface-hover: #e6f0ea;
+  --border: #dce7e0;
+  --border-strong: #c6d8ce;
+  --text: #203b33;
+  --ink: #163e33;
+  --muted: #536a60;
+  --green: #136653;
+  --accent-hover: #0e5545;
+  --accent-soft: #dfefe7;
+  --focus: #24836a;
+  --radius-control: 8px;
+  --radius-panel: 14px;
+  --shadow-panel: 0 8px 24px #173e3310;
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--page);
+  font-synthesis: none;
+}
+
+:is(button, a, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+button {
+  transition: background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+button:active:not(:disabled) {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none !important;
+  }
+}
